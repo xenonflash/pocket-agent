@@ -1,0 +1,30 @@
+{
+  "name": "pocket-agent",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "vite build"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/pocket-agent.es.js",
+      "require": "./dist/pocket-agent.umd.cjs"
+    }
+  },
+  "main": "./dist/pocket-agent.umd.cjs",
+  "module": "./dist/pocket-agent.es.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.3",
+    "vite": "^7.3.0",
+    "vite-plugin-dts": "^4.5.4"
+  }
+}
