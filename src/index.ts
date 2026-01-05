@@ -18,12 +18,20 @@ export interface ModelConfig {
   apiKey: string;
   baseUrl?: string;
   model: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  stream?: boolean;
 }
 
 export class Model implements ModelInterface {
   private baseUrl: string;
   private headers: Record<string, string>;
   private modelName: string;
+  private temperature?: number;
+  private maxTokens?: number;
+  private topP?: number;
+  private stream?: boolean;
 
   constructor(config: ModelConfig) {
     this.baseUrl = config.baseUrl || "https://api.openai.com/v1";
@@ -32,20 +40,70 @@ export class Model implements ModelInterface {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${config.apiKey}`
     };
+    this.temperature = config.temperature;
+    this.maxTokens = config.maxTokens;
+    this.topP = config.topP;
+    this.stream = config.stream;
   }
 
   async chat(messages: Message[]): Promise<string> {
+    const requestBody: Record<string, unknown> = {
+      model: this.modelName,
+      messages: messages.map((m) => ({ role: m.role, content: m.content }))
+    };
+
+    if (this.temperature !== undefined) {
+      requestBody.temperature = this.temperature;
+    }
+    if (this.maxTokens !== undefined) {
+      requestBody.max_tokens = this.maxTokens;
+    }
+    if (this.topP !== undefined) {
+      requestBody.top_p = this.topP;
+    }
+    if (this.stream) {
+      requestBody.stream = true;
+    }
+
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: this.headers,
-      body: JSON.stringify({
-        model: this.modelName,
-        messages: messages.map((m) => ({ role: m.role, content: m.content }))
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       throw new Error(`API error: ${response.statusText}`);
+    }
+
+    if (this.stream) {
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No reader available");
+      }
+      const decoder = new TextDecoder();
+      let fullContent = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") break;
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices[0]?.delta?.content;
+              if (content) {
+                fullContent += content;
+              }
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          }
+        }
+      }
+      return fullContent;
     }
 
     const data = await response.json();
@@ -62,7 +120,7 @@ export interface AgentConfig {
   model: ModelInterface;
   tools: Tool[];
   maxIterations?: number;
-  humanInLoop?: boolean;
+  humanInLoop?: (tool: string, input: unknown) => Promise<boolean>;
 }
 
 export class Agent implements Tool {
@@ -91,7 +149,7 @@ export class Agent implements Tool {
           if (!tool) continue;
 
           if (this.config.humanInLoop) {
-            const confirmed = await this.confirmAction(thought.tool, thought.input);
+            const confirmed = await this.config.humanInLoop(thought.tool, thought.input);
             if (!confirmed) continue;
           }
 
@@ -159,14 +217,6 @@ Or respond directly when done.`;
 
   private isComplete(response: string): boolean {
     return !response.includes("Action:") && !response.includes("Input:");
-  }
-
-  private async confirmAction(tool: string, input: unknown): Promise<boolean> {
-    process.stdout.write(`Execute ${tool} with input ${JSON.stringify(input)}? (y/n): `);
-    const answer = await new Promise<string>((resolve) => {
-      process.stdin.once("data", (data) => resolve(data.toString().trim()));
-    });
-    return answer.toLowerCase() === "y";
   }
 }
 
