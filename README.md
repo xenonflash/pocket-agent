@@ -2,15 +2,24 @@
 
 A minimal AI Agent SDK with ReAct pattern and Human-in-the-loop support.
 
+## Installation
+
+```bash
+npm install pocket-agent openai
+```
+
+**Note**: This package requires `openai` as a peer dependency. You need to install both `pocket-agent` and `openai`.
+
 ## Features
 
 - **Tool System**: Define and execute tools
 - **Model Interface**: Support any LLM
-- **Built-in Model**: Simple API for OpenAI-compatible models
+- **Built-in Model**: Official OpenAI SDK integration
 - **ReAct Loop**: Thought-Action-Observation cycle
 - **Human-in-Loop**: Confirm actions before execution
 - **Agent as Tool**: Compose agents as tools
 - **Context Sharing**: Share messages between parent and child agents
+- **TypeScript**: Full TypeScript support with type definitions
 
 ## Usage
 
@@ -21,7 +30,6 @@ import { createAgent, Tool, Model } from "pocket-agent";
 
 const model = new Model({
   apiKey: "your-api-key",
-  baseUrl: "https://api.openai.com/v1",
   model: "gpt-4"
 });
 
@@ -36,12 +44,22 @@ const calculator: Tool = {
 };
 
 const agent = createAgent({
-  model: model,
+  model,
   tools: [calculator],
   maxIterations: 5
 });
 
 const result = await agent.run("Add 1 and 2");
+```
+
+**Note**: The `Model` class uses the official OpenAI SDK. Optional config parameters (`baseUrl`, `temperature`, `maxTokens`, `topP`, `stream`) are preserved for backward compatibility but are not currently used. You can set a custom `baseUrl` for OpenAI-compatible APIs:
+
+```ts
+const model = new Model({
+  apiKey: "your-api-key",
+  baseUrl: "https://your-custom-api.com/v1",  // Optional
+  model: "your-model-name"
+});
 ```
 
 ### Agent as Tool with Context Sharing
@@ -63,19 +81,38 @@ const researchAgent = createAgent({
   description: "Performs web searches"
 });
 
-const context = new Context();
-
+// Auto-create context (recommended for simple cases)
 const mainAgent = createAgent({
-  model: model,
-  tools: [mathAgent, researchAgent],
-  context: context
+  model,
+  tools: [mathAgent, researchAgent]
 });
 
 await mainAgent.run("Calculate 5 + 3, then search for 'AI'");
 
-console.log(context.getMessages());
-console.log(context.getSubAgentMessages("math_agent"));
-console.log(context.getAllSubAgentMessages());
+// Access context
+console.log(mainAgent.getContext().getMessages());
+console.log(mainAgent.getContext().getSubAgentMessages("math_agent"));
+
+// Shared context (for multiple agents)
+const sharedContext = new Context();
+
+const agent1 = createAgent({
+  model,
+  tools: [calculator],
+  context: sharedContext
+});
+
+const agent2 = createAgent({
+  model,
+  tools: [search],
+  context: sharedContext
+});
+
+await agent1.run("Add 1 and 2");
+await agent2.run("Search for 'AI'");
+
+// Both agents share the same context
+console.log(sharedContext.getAllSubAgentMessages());
 ```
 
 ## Build

@@ -2,28 +2,60 @@
   "name": "pocket-agent",
   "version": "0.0.1",
   "type": "module",
+  "description": "A minimal AI Agent SDK with ReAct pattern and Context Sharing",
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "openai",
+    "react",
+    "tool",
+    "typescript",
+    "context-sharing"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "homepage": "",
+  "bugs": {
+    "url": ""
+  },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "vite build"
+    "dev": "tsx watch src/example.ts",
+    "build": "vite build",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
   },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/pocket-agent.es.js",
-      "require": "./dist/pocket-agent.umd.cjs"
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
     }
   },
-  "main": "./dist/pocket-agent.umd.cjs",
-  "module": "./dist/pocket-agent.es.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
   "files": [
     "dist"
   ],
   "dependencies": {
-    "tsx": "^4.19.2"
+    "openai": "^6.15.0"
+  },
+  "peerDependencies": {
+    "openai": "^4.0.0 || ^5.0.0 || ^6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "openai": {
+      "optional": false
+    }
   },
   "devDependencies": {
     "@types/node": "^25.0.3",
+    "tsx": "^4.19.2",
     "vite": "^7.3.0",
     "vite-plugin-dts": "^4.5.4"
   }

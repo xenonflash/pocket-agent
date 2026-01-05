@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+
 export interface Tool {
   name: string;
   description: string;
@@ -9,6 +11,8 @@ export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
 }
+
+export type OpenAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 export class Context {
   private messages: Message[] = [];
@@ -63,89 +67,36 @@ export interface ModelConfig {
 }
 
 export class Model implements ModelInterface {
-  private baseUrl: string;
-  private headers: Record<string, string>;
+  private client: OpenAI;
   private modelName: string;
-  private temperature?: number;
-  private maxTokens?: number;
-  private topP?: number;
-  private stream?: boolean;
 
   constructor(config: ModelConfig) {
-    this.baseUrl = config.baseUrl || "https://api.openai.com/v1";
+    this.client = new OpenAI({
+      apiKey: config.apiKey,
+      baseURL: config.baseUrl || "https://api.openai.com/v1"
+    });
     this.modelName = config.model;
-    this.headers = {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.apiKey}`
-    };
-    this.temperature = config.temperature;
-    this.maxTokens = config.maxTokens;
-    this.topP = config.topP;
-    this.stream = config.stream;
   }
 
   async chat(messages: Message[]): Promise<string> {
-    const requestBody: Record<string, unknown> = {
-      model: this.modelName,
-      messages: messages.map((m) => ({ role: m.role, content: m.content }))
-    };
+    const openaiMessages: OpenAIMessage[] = messages.map((m) => ({
+      role: m.role,
+      content: m.content
+    }));
 
-    if (this.temperature !== undefined) {
-      requestBody.temperature = this.temperature;
-    }
-    if (this.maxTokens !== undefined) {
-      requestBody.max_tokens = this.maxTokens;
-    }
-    if (this.topP !== undefined) {
-      requestBody.top_p = this.topP;
-    }
-    if (this.stream) {
-      requestBody.stream = true;
-    }
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.modelName,
+        messages: openaiMessages
+      });
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: this.headers,
-      body: JSON.stringify(requestBody)
-    });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.statusText}`);
-    }
-
-    if (this.stream) {
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error("No reader available");
+      return response.choices[0].message.content || "";
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        throw new Error(`OpenAI API error: ${error.message} (status: ${error.status})`);
       }
-      const decoder = new TextDecoder();
-      let fullContent = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6);
-            if (data === "[DONE]") break;
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices[0]?.delta?.content;
-              if (content) {
-                fullContent += content;
-              }
-            } catch (e) {
-              // Skip invalid JSON
-            }
-          }
-        }
-      }
-      return fullContent;
+      throw error;
     }
-
-    const data = await response.json();
-    return data.choices[0].message.content;
   }
 }
 
