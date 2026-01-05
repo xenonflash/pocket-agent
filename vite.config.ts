@@ -10,6 +10,7 @@ export default defineConfig({
     })
   ],
   build: {
+    target: 'node18',
     lib: {
       entry: "src/index.ts",
       name: "PocketAgent",
@@ -21,10 +22,12 @@ export default defineConfig({
       formats: ["es", "cjs"]
     },
     rollupOptions: {
-      external: ['openai'],
+      external: ['openai', 'fs', 'path'],
       output: {
         globals: {
-          openai: 'OpenAI'
+          openai: 'OpenAI',
+          fs: 'fs',
+          path: 'path'
         }
       }
     }

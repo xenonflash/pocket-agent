@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import { promises as fs } from 'fs';
+import { join } from 'path';
 
 export interface Tool {
   name: string;
@@ -13,6 +15,20 @@ export interface Message {
 }
 
 export type OpenAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
+
+export type HookContext = {
+  agentName: string;
+  iteration?: number;
+};
+
+export interface AgentHooks {
+  beforeRun?: (data: { task: string; messages: Message[] }, context: HookContext) => Promise<{ task: string; messages: Message[] } | undefined> | { task: string; messages: Message[] } | undefined;
+  beforeIteration?: (data: { iteration: number; messages: Message[] }, context: HookContext) => Promise<{ iteration: number; messages: Message[] } | undefined> | { iteration: number; messages: Message[] } | undefined;
+  afterIteration?: (data: { iteration: number; messages: Message[]; response: string; thoughts: Thought[] }, context: HookContext) => Promise<{ iteration: number; messages: Message[]; response: string; thoughts: Thought[] } | undefined> | { iteration: number; messages: Message[]; response: string; thoughts: Thought[] } | undefined;
+  afterRun?: (data: { task: string; messages: Message[]; result: string }, context: HookContext) => Promise<{ task: string; messages: Message[]; result: string } | undefined> | { task: string; messages: Message[]; result: string } | undefined;
+  beforeModelCall?: (data: { messages: Message[] }, context: HookContext) => Promise<{ messages: Message[] } | undefined> | { messages: Message[] } | undefined;
+  afterModelCall?: (data: { messages: Message[]; response: string }, context: HookContext) => Promise<{ messages: Message[]; response: string } | undefined> | { messages: Message[]; response: string } | undefined;
+}
 
 export class Context {
   private messages: Message[] = [];
@@ -113,6 +129,7 @@ export interface AgentConfig {
   context?: Context;
   name?: string;
   description?: string;
+  hooks?: AgentHooks;
 }
 
 export class Agent implements Tool {
@@ -132,17 +149,48 @@ export class Agent implements Tool {
     return this.context;
   }
 
+  private async runHook<T>(hookName: keyof AgentHooks, data: T, context: HookContext): Promise<T> {
+    const hook = this.config.hooks?.[hookName];
+    if (!hook) return data;
+
+    try {
+      const result = await (hook as any)(data, context);
+      return result === undefined ? data : result;
+    } catch (error) {
+      throw new Error(`Hook ${hookName} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async run(task: string): Promise<string> {
-    const messages: Message[] = [
+    const hookContext: HookContext = { agentName: this.name };
+
+    let messages: Message[] = [
       { role: "system", content: this.buildSystemPrompt() },
       { role: "user", content: task }
     ];
 
     this.context.setMessages(messages);
 
+    let hookData = await this.runHook('beforeRun', { task, messages }, hookContext);
+    task = hookData.task;
+    messages = hookData.messages;
+
     for (let i = 0; i < (this.config.maxIterations || 10); i++) {
+      hookContext.iteration = i;
+
+      let beforeIterData = await this.runHook('beforeIteration', { iteration: i, messages }, hookContext);
+      messages = beforeIterData.messages;
+
+      let beforeCallData = await this.runHook('beforeModelCall', { messages }, hookContext);
+      messages = beforeCallData.messages;
+
       const response = await this.config.model.chat(messages);
-      const thoughts = this.parseResponse(response);
+
+      let afterCallData = await this.runHook('afterModelCall', { messages, response }, hookContext);
+      messages = afterCallData.messages;
+      const processedResponse = afterCallData.response;
+
+      const thoughts = this.parseResponse(processedResponse);
 
       for (const thought of thoughts) {
         if (thought.type === "thought") {
@@ -170,14 +218,21 @@ export class Agent implements Tool {
             this.context.setSubAgentMessages(agentName, (tool as Agent).getContext().getMessages());
           }
 
-          messages.push({
+          const newMessage: Message = {
             role: "assistant",
             content: `Used tool ${thought.tool} with input ${JSON.stringify(thought.input)}\nResult: ${JSON.stringify(output)}`
-          });
+          };
+          messages.push(newMessage);
         }
       }
 
-      if (this.isComplete(response)) return response;
+      await this.runHook('afterIteration', { iteration: i, messages, response: processedResponse, thoughts }, hookContext);
+
+      if (this.isComplete(processedResponse)) {
+        let result = processedResponse;
+        let afterRunData = await this.runHook('afterRun', { task, messages, result }, hookContext);
+        return afterRunData.result;
+      }
     }
 
     return "Max iterations reached";
@@ -196,14 +251,14 @@ export class Agent implements Tool {
       .map((t) => `- ${t.name}: ${t.description}`)
       .join("\n");
     return `You are a helpful agent with access to tools:
-${tools}
+      ${tools}
 
-Think step by step. Format your response as:
-Thought: <your reasoning>
-Action: <tool_name>
-Input: <JSON input>
+      Think step by step. Format your response as:
+      Thought: <your reasoning>
+      Action: <tool_name>
+      Input: <JSON input>
 
-Or respond directly when done.`;
+      Or respond directly when done.`;
   }
 
   private parseResponse(response: string): Thought[] {
@@ -243,3 +298,246 @@ Or respond directly when done.`;
 export function createAgent(config: AgentConfig): Agent {
   return new Agent(config);
 }
+
+export interface LongContextPluginConfig {
+  maxTokens?: number;
+  activeBufferTokens?: number;
+  summaryThreshold?: number;
+  storageDir?: string;
+  conversationId?: string;
+  model?: ModelInterface;
+  tokenCounter?: (text: string) => number;
+}
+
+interface MessageEntry {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  tokens: number;
+  timestamp: number;
+  summarized?: boolean;
+}
+
+interface MessageIndex {
+  conversationId: string;
+  messages: MessageEntry[];
+  summary?: string;
+  totalTokens: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+class FileMessageStore {
+  constructor(private storageDir: string) {}
+
+  private getFilePath(conversationId: string, type: 'messages' | 'summary' | 'index'): string {
+    const dir = join(this.storageDir, 'conversations', conversationId);
+    return join(dir, `${type}.json`);
+  }
+
+  async saveSummary(conversationId: string, summary: string): Promise<void> {
+    const filePath = this.getFilePath(conversationId, 'summary');
+    await fs.mkdir(join(filePath, '..'), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(summary, null, 2));
+  }
+
+  async loadSummary(conversationId: string): Promise<string | null> {
+    try {
+      const filePath = this.getFilePath(conversationId, 'summary');
+      const content = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  }
+
+  async saveIndex(conversationId: string, index: MessageIndex): Promise<void> {
+    const filePath = this.getFilePath(conversationId, 'index');
+    await fs.mkdir(join(filePath, '..'), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(index, null, 2));
+  }
+
+  async loadIndex(conversationId: string): Promise<MessageIndex | null> {
+    try {
+      const filePath = this.getFilePath(conversationId, 'index');
+      const content = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return null;
+    }
+  }
+
+  async saveMessages(conversationId: string, messages: MessageEntry[]): Promise<void> {
+    const filePath = this.getFilePath(conversationId, 'messages');
+    await fs.mkdir(join(filePath, '..'), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify(messages, null, 2));
+  }
+
+  async loadMessages(conversationId: string): Promise<MessageEntry[]> {
+    try {
+      const filePath = this.getFilePath(conversationId, 'messages');
+      const content = await fs.readFile(filePath, 'utf-8');
+      return JSON.parse(content);
+    } catch {
+      return [];
+    }
+  }
+}
+
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+}
+
+function calculateTotalTokens(messages: Message[], tokenCounter: (text: string) => number): number {
+  return messages.reduce((sum, msg) => sum + tokenCounter(msg.content), 0);
+}
+
+async function generateSummary(messages: Message[], model?: ModelInterface): Promise<string> {
+  if (!model) return "Summarized messages";
+  
+  const summaryPrompt = `Summarize the following conversation concisely:\n\n${messages.map(m => `[${m.role}]: ${m.content}`).join('\n\n')}\n\nSummary:`;
+  
+  const response = await model.chat([
+    { role: "system", content: "You are a helpful assistant that summarizes conversations." },
+    { role: "user", content: summaryPrompt }
+  ]);
+  
+  return response.trim();
+}
+
+function splitMessages(messages: Message[], activeBufferTokens: number, tokenCounter: (text: string) => number): { toSummarize: Message[]; toKeep: Message[] } {
+  const systemMessages = messages.filter(m => m.role === 'system');
+  const nonSystemMessages = messages.filter(m => m.role !== 'system');
+  
+  let currentTokens = 0;
+  const toKeep: Message[] = [...systemMessages];
+  const toSummarize: Message[] = [];
+  
+  for (let i = nonSystemMessages.length - 1; i >= 0; i--) {
+    const msg = nonSystemMessages[i];
+    const tokens = tokenCounter(msg.content);
+    
+    if (currentTokens + tokens <= activeBufferTokens) {
+      toKeep.unshift(msg);
+      currentTokens += tokens;
+    } else {
+      toSummarize.unshift(msg);
+    }
+  }
+  
+  return { toSummarize, toKeep };
+}
+
+function mergeSummaries(oldSummary: string, newSummary: string): string {
+  if (!oldSummary) return newSummary;
+  if (!newSummary) return oldSummary;
+  return `Previous context: ${oldSummary}\n\nRecent: ${newSummary}`;
+}
+
+export function createLongContextPlugin(config: LongContextPluginConfig = {}): { name: string; hooks: AgentHooks } {
+  const maxTokens = config.maxTokens || 8000;
+  const activeBufferTokens = config.activeBufferTokens || 4000;
+  const summaryThreshold = config.summaryThreshold || 6000;
+  const tokenCounter = config.tokenCounter || ((text) => Math.ceil(text.length / 4));
+  const storageDir = config.storageDir || './storage';
+  
+  let summaryBuffer = "";
+  const messageStore = new FileMessageStore(storageDir);
+  
+  return {
+    name: 'longContext',
+    hooks: {
+      async beforeRun({ task, messages }, context) {
+        const updatedMessages = [...messages];
+        if (config.conversationId) {
+          const savedSummary = await messageStore.loadSummary(config.conversationId);
+          if (savedSummary) {
+            summaryBuffer = savedSummary;
+            updatedMessages.splice(1, 0, { role: 'system', content: savedSummary });
+          }
+        }
+        return { task, messages: updatedMessages };
+      },
+      
+      async afterIteration({ iteration, messages, response, thoughts }, context) {
+        const updatedMessages = [...messages];
+        const totalTokens = calculateTotalTokens(updatedMessages, tokenCounter);
+        
+        if (totalTokens > summaryThreshold) {
+          const { toSummarize, toKeep } = splitMessages(updatedMessages, activeBufferTokens, tokenCounter);
+          
+          if (toSummarize.length > 0) {
+            const newSummary = await generateSummary(toSummarize, config.model);
+            summaryBuffer = mergeSummaries(summaryBuffer, newSummary);
+            
+            if (config.conversationId) {
+              const entries: MessageEntry[] = toSummarize.map((msg, idx) => ({
+                id: generateId(),
+                role: msg.role,
+                content: msg.content,
+                tokens: tokenCounter(msg.content),
+                timestamp: Date.now(),
+                summarized: true
+              }));
+              
+              await messageStore.saveMessages(config.conversationId, entries);
+              await messageStore.saveSummary(config.conversationId, summaryBuffer);
+            }
+            
+            updatedMessages.splice(0, updatedMessages.length,
+              updatedMessages[0],
+              { role: 'system', content: summaryBuffer },
+              ...toKeep
+            );
+          }
+        }
+        
+        return { iteration, messages: updatedMessages, response, thoughts };
+      },
+      
+      async afterRun({ task, messages, result }, context) {
+        if (config.conversationId) {
+          await messageStore.saveSummary(config.conversationId, summaryBuffer);
+        }
+        return { task, messages, result };
+      }
+    }
+  };
+}
+
+export function createLoggingPlugin(): { name: string; hooks: AgentHooks } {
+  return {
+    name: 'logger',
+    hooks: {
+      async beforeIteration({ iteration, messages }, context) {
+        console.log(`[Logger] Iteration ${iteration} for agent ${context.agentName}, messages: ${messages.length}`);
+        return { iteration, messages };
+      },
+      async afterIteration({ iteration, response, messages, thoughts }, context) {
+        console.log(`[Logger] Response at iteration ${iteration}:`, response.substring(0, 100));
+        return { iteration, messages, response, thoughts };
+      }
+    }
+  };
+}
+
+export function combineHooks(...plugins: { hooks: AgentHooks }[]): AgentHooks {
+  const combined: AgentHooks = {};
+  
+  for (const plugin of plugins) {
+    for (const [hookName, hookFn] of Object.entries(plugin.hooks)) {
+      const existingHook = combined[hookName as keyof AgentHooks];
+      if (existingHook) {
+        combined[hookName as keyof AgentHooks] = async (data: any, context: HookContext) => {
+          let result = await (existingHook as any)(data, context);
+          return await (hookFn as any)(result, context);
+        };
+      } else {
+        combined[hookName as keyof AgentHooks] = hookFn;
+      }
+    }
+  }
+  
+  return combined;
+}
+
