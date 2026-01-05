@@ -22,12 +22,13 @@ export default defineConfig({
       formats: ["es", "cjs"]
     },
     rollupOptions: {
-      external: ['openai', 'fs', 'path'],
+      external: ['openai', 'fs', 'path', 'fs/promises'],
       output: {
         globals: {
           openai: 'OpenAI',
           fs: 'fs',
-          path: 'path'
+          path: 'path',
+          'fs/promises': 'fs/promises'
         }
       }
     }

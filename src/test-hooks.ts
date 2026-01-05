@@ -1,4 +1,5 @@
-import { createAgent, Model, createLoggingPlugin, combineHooks } from './index';
+import { createAgent, Model } from './index';
+import { createLoggingPlugin } from './plugins';
 
 async function testHookSystem() {
   console.log('Testing Hook System...\n');
@@ -52,11 +53,11 @@ async function testHookSystem() {
     model,
     tools: [testTool],
     maxIterations: 2,
-    hooks: combineHooks(testPlugin, loggingPlugin)
+    hooks: [testPlugin, loggingPlugin]
   });
 
   try {
-    const result = await agent.run('Test the hook system');
+    const result = await agent.run('Test hook system');
     console.log(`\n✓ All hooks executed successfully (total: ${hookCallCount} calls)`);
     console.log(`✓ Agent result: ${result.substring(0, 100)}...`);
   } catch (error) {

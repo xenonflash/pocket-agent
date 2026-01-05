@@ -1,4 +1,5 @@
-import { createAgent, Model, createLongContextPlugin, createLoggingPlugin, combineHooks } from './index';
+import { createAgent, Model } from './index';
+import { createLongContextPlugin, createLoggingPlugin } from './plugins';
 
 async function example() {
   const model = new Model({
@@ -36,10 +37,10 @@ async function example() {
   const agent = createAgent({
     model,
     tools: [calculator],
-    hooks: combineHooks(longContextPlugin, loggingPlugin)
+    hooks: [longContextPlugin, loggingPlugin]
   });
 
-  const result = await agent.run('Calculate 2 + 2, then multiply the result by 3');
+  const result = await agent.run('Calculate 2 + 2, then multiply result by 3');
   console.log('Result:', result);
 }
 

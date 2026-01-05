@@ -4,6 +4,28 @@
 
 Pocket Agent现在支持基于hooks的插件系统，可以轻松扩展功能，同时保持核心SDK的极简设计。
 
+## 插件结构
+
+```
+src/
+  ├── index.ts           # 核心 Agent SDK
+  └── plugins/           # 插件目录
+      ├── index.ts        # 插件统一导出
+      ├── long-context.ts # 长上下文插件
+      └── logging.ts      # 日志插件
+```
+
+## Plugin类型
+
+所有插件都实现了`Plugin`接口：
+
+```typescript
+export interface Plugin {
+  name: string;
+  hooks: AgentHooks;
+}
+```
+
 ## Hook系统
 
 ### 可用的Hooks
@@ -45,7 +67,8 @@ beforeRun -> [beforeIteration -> beforeModelCall -> model.chat -> afterModelCall
 自动管理对话上下文，通过摘要和文件存储实现"无限"上下文长度。
 
 ```typescript
-import { createAgent, Model, createLongContextPlugin } from 'pocket-agent';
+import { createAgent, Model } from 'pocket-agent';
+import { createLongContextPlugin } from 'pocket-agent/plugins';
 
 const model = new Model({
   apiKey: 'your-api-key',
@@ -65,7 +88,7 @@ const longContextPlugin = createLongContextPlugin({
 const agent = createAgent({
   model,
   tools,
-  hooks: longContextPlugin.hooks
+  hooks: [longContextPlugin]
 });
 ```
 
@@ -95,43 +118,58 @@ const agent = createAgent({
 简单的日志记录插件。
 
 ```typescript
-import { createAgent, createLoggingPlugin } from 'pocket-agent';
+import { createAgent } from 'pocket-agent';
+import { createLoggingPlugin } from 'pocket-agent/plugins';
 
 const loggingPlugin = createLoggingPlugin();
 
 const agent = createAgent({
   model,
   tools,
-  hooks: loggingPlugin.hooks
+  hooks: [loggingPlugin]
 });
 ```
 
 ## 组合插件
 
-使用`combineHooks`函数组合多个插件：
+直接在hooks字段传入插件数组，会自动组合：
 
 ```typescript
-import { combineHooks } from 'pocket-agent';
+import { createAgent } from 'pocket-agent';
+import { createLongContextPlugin, createLoggingPlugin } from 'pocket-agent/plugins';
+
+const longContextPlugin = createLongContextPlugin({...});
+const loggingPlugin = createLoggingPlugin();
 
 const agent = createAgent({
   model,
   tools,
-  hooks: combineHooks(longContextPlugin, loggingPlugin)
+  hooks: [longContextPlugin, loggingPlugin]  // 自动组合多个插件
 });
 ```
 
-插件会按注册顺序依次执行。
+插件会按数组顺序依次执行。也支持传入单个插件：
+
+```typescript
+const agent = createAgent({
+  model,
+  tools,
+  hooks: [longContextPlugin]  // 单个插件也用数组
+});
+```
 
 ## 自定义插件
 
 创建自定义插件非常简单：
 
 ```typescript
+import type { Plugin } from 'pocket-agent';
+
 interface MyPluginConfig {
   // 插件特有的配置
 }
 
-function createMyPlugin(config: MyPluginConfig = {}): { name: string; hooks: AgentHooks } {
+function createMyPlugin(config: MyPluginConfig = {}): Plugin {
   return {
     name: 'myPlugin',
     hooks: {
@@ -150,6 +188,17 @@ function createMyPlugin(config: MyPluginConfig = {}): { name: string; hooks: Age
     }
   };
 }
+
+// 使用自定义插件
+import { createAgent } from 'pocket-agent';
+
+const myPlugin = createMyPlugin();
+
+const agent = createAgent({
+  model,
+  tools,
+  hooks: [myPlugin]
+});
 ```
 
 ## 最佳实践
@@ -170,4 +219,5 @@ pnpm exec tsx src/test-hooks.ts
 ## 示例
 
 查看 `src/plugin-example.ts` 获取完整示例。
+
 
