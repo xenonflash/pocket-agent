@@ -10,6 +10,44 @@ export interface Message {
   content: string;
 }
 
+export class Context {
+  private messages: Message[] = [];
+  private subAgentMessages: Map<string, Message[]> = new Map();
+
+  getMessages(): Message[] {
+    return [...this.messages];
+  }
+
+  setMessages(messages: Message[]): void {
+    this.messages = messages;
+  }
+
+  addMessage(message: Message): void {
+    this.messages.push(message);
+  }
+
+  getSubAgentMessages(agentName: string): Message[] {
+    return [...(this.subAgentMessages.get(agentName) || [])];
+  }
+
+  setSubAgentMessages(agentName: string, messages: Message[]): void {
+    this.subAgentMessages.set(agentName, messages);
+  }
+
+  getAllSubAgentMessages(): Record<string, Message[]> {
+    const result: Record<string, Message[]> = {};
+    for (const [name, msgs] of this.subAgentMessages.entries()) {
+      result[name] = [...msgs];
+    }
+    return result;
+  }
+
+  reset(): void {
+    this.messages = [];
+    this.subAgentMessages.clear();
+  }
+}
+
 export interface ModelInterface {
   chat(messages: Message[]): Promise<string>;
 }
@@ -121,20 +159,35 @@ export interface AgentConfig {
   tools: Tool[];
   maxIterations?: number;
   humanInLoop?: (tool: string, input: unknown) => Promise<boolean>;
+  context?: Context;
+  name?: string;
+  description?: string;
 }
 
 export class Agent implements Tool {
-  name = "agent";
-  description = "AI agent that can reason and use tools";
+  name: string;
+  description: string;
   params = { task: "string" };
 
-  constructor(private config: AgentConfig) {}
+  private context: Context;
+
+  constructor(private config: AgentConfig) {
+    this.name = config.name || "agent";
+    this.description = config.description || "AI agent that can reason and use tools";
+    this.context = config.context || new Context();
+  }
+
+  getContext(): Context {
+    return this.context;
+  }
 
   async run(task: string): Promise<string> {
     const messages: Message[] = [
       { role: "system", content: this.buildSystemPrompt() },
       { role: "user", content: task }
     ];
+
+    this.context.setMessages(messages);
 
     for (let i = 0; i < (this.config.maxIterations || 10); i++) {
       const response = await this.config.model.chat(messages);
@@ -153,7 +206,19 @@ export class Agent implements Tool {
             if (!confirmed) continue;
           }
 
+          const isSubAgent = tool instanceof Agent;
+          const agentName = isSubAgent ? tool.name : thought.tool;
+
+          if (isSubAgent) {
+            (tool as Agent).setContext(this.context);
+          }
+
           const output = await tool.execute(thought.input);
+
+          if (isSubAgent) {
+            this.context.setSubAgentMessages(agentName, (tool as Agent).getContext().getMessages());
+          }
+
           messages.push({
             role: "assistant",
             content: `Used tool ${thought.tool} with input ${JSON.stringify(thought.input)}\nResult: ${JSON.stringify(output)}`
@@ -165,6 +230,10 @@ export class Agent implements Tool {
     }
 
     return "Max iterations reached";
+  }
+
+  setContext(context: Context): void {
+    this.context = context;
   }
 
   async execute(params: unknown): Promise<unknown> {

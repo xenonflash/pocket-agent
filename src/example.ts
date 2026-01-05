@@ -1,13 +1,9 @@
-import { Agent, Model, Tool, createAgent } from "./index";
+import { Agent, Model, Tool, createAgent, Context } from "./index";
 
 const model = new Model({
   apiKey: "your-api-key",
   baseUrl: "https://api.openai.com/v1",
   model: "gpt-4",
-  temperature: 0.7,
-  maxTokens: 1000,
-  topP: 0.9,
-  stream: false
 });
 
 const calculator: Tool = {
@@ -30,14 +26,28 @@ const search: Tool = {
   }
 };
 
-const agent = createAgent({
-  model: model,
-  tools: [calculator, search],
-  maxIterations: 5,
-  humanInLoop: async (tool: string, input: unknown) => {
-    console.log(`Execute ${tool} with input ${JSON.stringify(input)}? (y/n): `);
-    return true;
-  }
+const subAgent = createAgent({
+  model,
+  tools: [calculator],
+  name: "math_agent",
+  description: "Performs mathematical calculations"
 });
 
-agent.run("Add 1 and 2").then(console.log);
+const context = new Context();
+
+const mainAgent = createAgent({
+  model: model,
+  tools: [calculator, search, subAgent],
+  maxIterations: 5,
+  context: context
+});
+
+mainAgent.run("Calculate 5 + 3, then search for 'AI'").then((result) => {
+  console.log("Result:", result);
+  console.log("\n--- Main Agent Messages ---");
+  console.log(context.getMessages());
+  console.log("\n--- Sub Agent Messages ---");
+  console.log(context.getSubAgentMessages("math_agent"));
+  console.log("\n--- All Sub Agents ---");
+  console.log(context.getAllSubAgentMessages());
+});
