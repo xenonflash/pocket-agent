@@ -1,17 +1,10 @@
 import { Agent, Model, Tool, createAgent } from "./index";
 
-class MockModel implements Model {
-  async chat(messages: any[]): Promise<string> {
-    const last = messages[messages.length - 1];
-    if (last.content.includes("add")) {
-      return `Thought: I need to add two numbers\nAction: calculator\nInput: {"a": 1, "b": 2}`;
-    }
-    if (last.content.includes("multiply")) {
-      return `Thought: I need to multiply two numbers\nAction: calculator\nInput: {"a": 3, "b": 4}`;
-    }
-    return "Task completed successfully";
-  }
-}
+const model = new Model({
+  apiKey: "your-api-key",
+  baseUrl: "https://api.openai.com/v1",
+  model: "gpt-4"
+});
 
 const calculator: Tool = {
   name: "calculator",
@@ -34,7 +27,7 @@ const search: Tool = {
 };
 
 const agent = createAgent({
-  model: new MockModel(),
+  model: model,
   tools: [calculator, search],
   maxIterations: 5,
   humanInLoop: false

@@ -6,6 +6,7 @@ A minimal AI Agent SDK with ReAct pattern and Human-in-the-loop support.
 
 - **Tool System**: Define and execute tools
 - **Model Interface**: Support any LLM
+- **Built-in Model**: Simple API for OpenAI-compatible models
 - **ReAct Loop**: Thought-Action-Observation cycle
 - **Human-in-Loop**: Confirm actions before execution
 - **Agent as Tool**: Compose agents as tools
@@ -14,6 +15,13 @@ A minimal AI Agent SDK with ReAct pattern and Human-in-the-loop support.
 
 ```ts
 import { createAgent, Tool, Model } from "pocket-agent";
+
+// Create model
+const model = new Model({
+  apiKey: "your-api-key",
+  baseUrl: "https://api.openai.com/v1",
+  model: "gpt-4"
+});
 
 // Define a tool
 const calculator: Tool = {
@@ -28,7 +36,7 @@ const calculator: Tool = {
 
 // Create agent
 const agent = createAgent({
-  model: yourLLMModel,
+  model: model,
   tools: [calculator],
   maxIterations: 5,
   humanInLoop: true

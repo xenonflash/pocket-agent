@@ -10,8 +10,47 @@ export interface Message {
   content: string;
 }
 
-export interface Model {
+export interface ModelInterface {
   chat(messages: Message[]): Promise<string>;
+}
+
+export interface ModelConfig {
+  apiKey: string;
+  baseUrl?: string;
+  model: string;
+}
+
+export class Model implements ModelInterface {
+  private baseUrl: string;
+  private headers: Record<string, string>;
+  private modelName: string;
+
+  constructor(config: ModelConfig) {
+    this.baseUrl = config.baseUrl || "https://api.openai.com/v1";
+    this.modelName = config.model;
+    this.headers = {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${config.apiKey}`
+    };
+  }
+
+  async chat(messages: Message[]): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        model: this.modelName,
+        messages: messages.map((m) => ({ role: m.role, content: m.content }))
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content;
+  }
 }
 
 export type Thought =
@@ -20,7 +59,7 @@ export type Thought =
   | { type: "observation"; output: unknown };
 
 export interface AgentConfig {
-  model: Model;
+  model: ModelInterface;
   tools: Tool[];
   maxIterations?: number;
   humanInLoop?: boolean;
