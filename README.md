@@ -52,6 +52,44 @@ const agent = createAgent({
 const result = await agent.run("Add 1 and 2");
 ```
 
+### Human-in-the-Loop
+
+Enable human confirmation before tool execution:
+
+```ts
+import { createAgent, Tool } from "pocket-agent";
+import readline from "readline/promises";
+import { stdin as input, stdout as output } from "process";
+
+const rl = readline.createInterface({ input, output });
+
+const calculator: Tool = {
+  name: "calculator",
+  description: "Add two numbers",
+  params: { a: "number", b: "number" },
+  async execute(params) {
+    const { a, b } = params as { a: number; b: number };
+    return a + b;
+  }
+};
+
+const agent = createAgent({
+  model,
+  tools: [calculator],
+  humanInLoop: async (tool, input) => {
+    console.log(`\nTool: ${tool}`);
+    console.log(`Input: ${JSON.stringify(input)}`);
+    const answer = await rl.question("Execute this action? (y/n): ");
+    return answer.toLowerCase() === "y";
+  }
+});
+
+await agent.run("Add 5 and 7");
+// Will prompt: "Execute this action? (y/n):"
+
+rl.close();
+```
+
 **Note**: The `Model` class uses the official OpenAI SDK. Optional config parameters (`baseUrl`, `temperature`, `maxTokens`, `topP`, `stream`) are preserved for backward compatibility but are not currently used. You can set a custom `baseUrl` for OpenAI-compatible APIs:
 
 ```ts
@@ -81,7 +119,7 @@ const researchAgent = createAgent({
   description: "Performs web searches"
 });
 
-// Auto-create context (recommended for simple cases)
+// Sub-agents automatically inherit parent's context when called
 const mainAgent = createAgent({
   model,
   tools: [mathAgent, researchAgent]
@@ -114,6 +152,8 @@ await agent2.run("Search for 'AI'");
 // Both agents share the same context
 console.log(sharedContext.getAllSubAgentMessages());
 ```
+
+**Note**: When a parent agent calls a sub-agent, the sub-agent automatically inherits the parent's context. You don't need to manually pass context objects to sub-agents.
 
 ## Build
 
