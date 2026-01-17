@@ -1,4 +1,4 @@
-import { createAgent, Model } from './index';
+import { createAgent, Model, Tool, Plugin } from './index';
 import { createLoggingPlugin } from './plugins';
 
 async function testHookSystem() {
@@ -9,10 +9,19 @@ async function testHookSystem() {
     model: 'gpt-4o-mini'
   });
 
-  const testTool = {
-    name: 'test_tool',
-    description: 'A simple test tool',
-    params: { input: 'string' },
+  const testTool: Tool = {
+    type: 'function',
+    function: {
+        name: 'test_tool',
+        description: 'A simple test tool',
+        parameters: { 
+            type: 'object',
+            properties: {
+                input: { type: 'string' }
+            },
+            required: ['input']
+        }
+    },
     async execute(params: unknown): Promise<unknown> {
       const { input } = params as { input: string };
       return `Processed: ${input}`;
@@ -21,7 +30,7 @@ async function testHookSystem() {
 
   let hookCallCount = 0;
 
-  const testPlugin = {
+  const testPlugin: Plugin = {
     name: 'testPlugin',
     hooks: {
       async beforeIteration({ iteration, messages }) {

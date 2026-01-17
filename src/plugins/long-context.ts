@@ -73,13 +73,13 @@ class SimpleMessageStore {
 }
 
 function calculateTotalTokens(messages: Message[], tokenCounter: (text: string) => number): number {
-  return messages.reduce((sum, msg) => sum + tokenCounter(msg.content), 0);
+  return messages.reduce((sum, msg) => sum + tokenCounter(msg.content || ""), 0);
 }
 
 async function generateSummary(messages: Message[], model?: ModelInterface): Promise<string> {
   if (!model) return "Summarized messages";
   
-  const summaryPrompt = `Summarize the following conversation concisely. Capture key details, decisions, and context that should be preserved:\n\n${messages.map(m => `[${m.role}]: ${m.content}`).join('\n\n')}\n\nSummary:`;
+  const summaryPrompt = `Summarize the following conversation concisely. Capture key details, decisions, and context that should be preserved:\n\n${messages.map(m => `[${m.role}]: ${m.content || ""}`).join('\n\n')}\n\nSummary:`;
   
   const response = await model.chat([
     { role: "system", content: "You are a helpful assistant that summarizes conversations." },
@@ -139,7 +139,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
       for (const msg of results) {
         let content = msg.content || '';
         if (content.length > SINGLE_MSG_LIMIT) {
-          content = content.slice(0, SINGLE_MSG_LIMIT) + `\n... [Content Truncated, original length: ${msg.content.length} chars]`;
+          content = content.slice(0, SINGLE_MSG_LIMIT) + `\n... [Content Truncated, original length: ${(msg.content||'').length} chars]`;
         }
         
         const entry = `\n---\n[${msg.role}]: ${content}`;
@@ -191,7 +191,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
         let userInput = messages.length > 1 ? messages[messages.length - 1] : null;
 
         // 3. Smart Context Assembly (Token Management)
-        const systemTokens = tokenCounter(messages[0].content);
+        const systemTokens = tokenCounter(messages[0].content || "");
         let currentTokens = systemTokens;
         
         // Reserve space for User Input?
@@ -212,7 +212,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
         const availableTokens = activeBufferTokens - systemTokens;
         
         if (userInput) {
-             const inputTokens = tokenCounter(userInput.content);
+             const inputTokens = tokenCounter(userInput.content || "");
              
              if (inputTokens > availableTokens) {
                  // CASE: User Input is HUGE.
@@ -222,7 +222,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
                  await store.appendHistory(config.conversationId, [userInput]);
                  
                  const keepChars = (availableTokens - 200) * 3; // Estimate simplified
-                 const truncatedContent = userInput.content.slice(0, keepChars) + 
+                 const truncatedContent = (userInput.content || "").slice(0, keepChars) + 
                     `\n... [SYSTEM WARNING: This input was too long (${inputTokens} tokens) and has been truncated to fit the context window. The full content has been archived to history.]`;
                     
                  finalMessages.push({
@@ -248,7 +248,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
                  }
                  
                  if (summaryMessage) {
-                     const summaryTokens = tokenCounter(summaryMessage.content);
+                     const summaryTokens = tokenCounter(summaryMessage.content || "");
                      if (summaryTokens <= historyBudget) {
                          // Summary fits!
                          historyBudget -= summaryTokens;
@@ -269,7 +269,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
                  const reverseCandidates = [...recentMessagesCandidates].reverse();
                  
                  for (const msg of reverseCandidates) {
-                     const t = tokenCounter(msg.content);
+                     const t = tokenCounter(msg.content || "");
                      if (usedHistoryTokens + t <= historyBudget) {
                          fittingHistory.unshift(msg);
                          usedHistoryTokens += t;
@@ -302,7 +302,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
           // We only summarize "content" messages from the middle.
           
           let startIndex = 1;
-          if (updatedMessages[1]?.role === 'system' && updatedMessages[1].content.startsWith('PREVIOUS CONVERSATION SUMMARY')) {
+          if (updatedMessages[1]?.role === 'system' && (updatedMessages[1].content || "").startsWith('PREVIOUS CONVERSATION SUMMARY')) {
             startIndex = 2;
           }
 
@@ -315,7 +315,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
           const toSummarize: Message[] = [];
           
           for (const msg of candidatesReverse) {
-             const t = tokenCounter(msg.content);
+             const t = tokenCounter(msg.content || "");
              if (currentTokens + t <= activeBufferTokens) {
                toKeep.unshift(msg);
                currentTokens += t;
@@ -357,7 +357,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
           // Filter out System Prompts and Summary to get "Recent Messages"
           const recentMessages = fullMessages.filter((msg, index) => {
              if (index === 0 && msg.role === 'system') return false; // Main System Prompt
-             if (msg.role === 'system' && msg.content.startsWith('PREVIOUS CONVERSATION SUMMARY')) return false; // Summary
+             if (msg.role === 'system' && (msg.content || "").startsWith('PREVIOUS CONVERSATION SUMMARY')) return false; // Summary
              return true; 
           });
 

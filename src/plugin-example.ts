@@ -1,4 +1,4 @@
-import { createAgent, Model } from './index';
+import { createAgent, Model, Tool } from './index';
 import { createLongContextPlugin, createLoggingPlugin } from './plugins';
 
 async function example() {
@@ -7,7 +7,7 @@ async function example() {
     model: 'gpt-4o-mini'
   });
 
-  const calculator = {
+  const calculator: Tool = {
     type: 'function',
     function: {
         name: 'calculator',

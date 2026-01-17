@@ -8,6 +8,14 @@ export interface Tool {
       parameters?: Record<string, unknown>;
   };
   execute: (params?: any) => Promise<any>;
+  /**
+   * Whether this tool can be executed in parallel with other tools.
+   * If true, it will be added to the parallel execution queue.
+   * If false, it acts as a barrier: all previous parallel tools must finish, 
+   * then this tool executes alone, then subsequent tools continue.
+   * Default: true
+   */
+  isParallel?: boolean; 
 }
 
 export interface Message {
@@ -279,28 +287,33 @@ export class Agent implements Tool {
 
       // Logic for tool execution
       const toolCalls = modelResponse.toolCalls;
-      const thoughts: Thought[] = []; // Deprecated concept in new structure but kept for hooks
+      const thoughts: Thought[] = [];
 
       if (toolCalls && toolCalls.length > 0) {
           emptyResponseCount = 0; // Reset error counter on successful tool usage
-          for (const toolCall of toolCalls) {
+
+          const toolResults: { id: string; name: string; output: string }[] = [];
+          const executions: Promise<void>[] = [];
+
+          // Helper to process a single tool call
+          const processToolCall = async (toolCall: OpenAIToolCall) => {
+              if (toolCall.type !== 'function') return;
+
               const toolName = toolCall.function.name;
               const toolInputStr = toolCall.function.arguments;
               let toolInput: any;
               try {
                   toolInput = JSON.parse(toolInputStr);
               } catch(e) {
-                  toolInput = {}; // Parse error
+                  toolInput = {};
               }
 
-              // Compatibility thought
+              // Compatibility thought (sync side effect)
               thoughts.push({ type: 'action', tool: toolName, input: toolInput });
 
-              // console.log(`Executing tool ${toolName} with input`, toolInput);
-              
               const tool = this.config.tools.find((t) => t.function.name === toolName);
-              let output;
-              
+              let output: any;
+
               if (!tool) {
                   output = `Tool ${toolName} not found`;
               } else {
@@ -335,17 +348,60 @@ export class Agent implements Tool {
                   }
               }
 
-              // Append Tool Result
               const toolOutput = typeof output === 'string' ? output : JSON.stringify(output);
-              // console.log(`Tool ${toolName} output:`, toolOutput.slice(0, 100) + (toolOutput.length > 100 ? '...' : ''));
-
-              messages.push({
-                  role: "tool",
-                  content: toolOutput || "Success", // Ensure content is never null completely if the tool succeeded but returned nothing
-                  tool_call_id: toolCall.id,
-                  name: toolName
+              toolResults.push({
+                  id: toolCall.id,
+                  name: toolName,
+                  output: toolOutput || "Success"
               });
+          };
+
+          // Group tool calls for execution
+          // Default behavior: execute all in parallel unless isParallel is explicitly false
+          
+          let currentBatch: Promise<void>[] = [];
+          
+          for (const toolCall of toolCalls) {
+              if (toolCall.type !== 'function') continue;
+
+              const toolName = toolCall.function.name;
+              const tool = this.config.tools.find((t) => t.function.name === toolName);
+              
+              const worksInParallel = tool?.isParallel !== false; // Default true
+
+              if (worksInParallel) {
+                  currentBatch.push(processToolCall(toolCall));
+              } else {
+                  // If we hit a non-parallel tool:
+                  // 1. Wait for current batch to finish
+                  if (currentBatch.length > 0) {
+                      await Promise.all(currentBatch);
+                      currentBatch = [];
+                  }
+                  // 2. Execute this tool strictly sequentially
+                  await processToolCall(toolCall);
+              }
           }
+          
+          // Finish remaining batch
+          if (currentBatch.length > 0) {
+              await Promise.all(currentBatch);
+          }
+
+          // Important: OpenAI expects tool outputs in the SAME ORDER as tool calls.
+          // Since parallel execution might finish out of order, we must re-sort results based on original toolCalls order.
+          for (const toolCall of toolCalls) {
+             const result = toolResults.find(r => r.id === toolCall.id);
+             if (result) {
+                  messages.push({
+                      role: "tool",
+                      content: result.output,
+                      tool_call_id: result.id,
+                      name: result.name
+                  });
+             }
+          }
+
       } else {
           // No tools called, regular thought
            thoughts.push({ type: 'thought', content: processedResponse });

@@ -78,7 +78,7 @@ export function createLoggingPlugin(): { name: string; hooks: AgentHooks } {
 
             if (toolMessages.length > 0) {
                 toolMessages.forEach(msg => {
-                     let output = msg.content;
+                     let output = msg.content || "";
                      if (output.length > 200) {
                          output = output.slice(0, 200) + `... (${output.length - 200} more chars)`;
                      }
@@ -92,10 +92,10 @@ export function createLoggingPlugin(): { name: string; hooks: AgentHooks } {
         return { iteration, response, thoughts, messages };
       },
       
-      async afterRun({ result }) {
+      async afterRun({ task, messages, result }) {
         console.log(`\n${colors.fg.green}${colors.bright}✅ Agent Finished${colors.reset}`);
         console.log(`${colors.fg.green}Result: ${result}${colors.reset}\n`);
-        return { result };
+        return { task, messages, result };
       }
     }
   };
