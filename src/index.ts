@@ -1,18 +1,25 @@
 import OpenAI from 'openai';
 
 export interface Tool {
-  name: string;
-  description: string;
-  params: Record<string, unknown>;
-  execute: (params: unknown) => Promise<unknown>;
+  type: 'function';
+  function: {
+      name: string;
+      description?: string;
+      parameters?: Record<string, unknown>;
+  };
+  execute: (params?: any) => Promise<any>;
 }
 
 export interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string | null;
+  name?: string;
+  tool_calls?: OpenAIToolCall[];
+  tool_call_id?: string;
 }
 
 export type OpenAIMessage = OpenAI.Chat.ChatCompletionMessageParam;
+export type OpenAIToolCall = OpenAI.Chat.Completions.ChatCompletionMessageToolCall;
 
 export type HookContext = {
   agentName: string;
@@ -22,6 +29,7 @@ export type HookContext = {
 export interface Plugin {
   name: string;
   hooks: AgentHooks;
+  tools?: Tool[];
 }
 
 export interface AgentHooks {
@@ -71,8 +79,13 @@ export class Context {
   }
 }
 
+export interface ModelResponse {
+    content: string | null;
+    toolCalls?: OpenAIToolCall[];
+}
+
 export interface ModelInterface {
-  chat(messages: Message[]): Promise<string>;
+  chat(messages: Message[], tools?: Tool[]): Promise<ModelResponse>;
 }
 
 export interface ModelConfig {
@@ -97,19 +110,38 @@ export class Model implements ModelInterface {
     this.modelName = config.model;
   }
 
-  async chat(messages: Message[]): Promise<string> {
-    const openaiMessages: OpenAIMessage[] = messages.map((m) => ({
-      role: m.role,
-      content: m.content
+  async chat(messages: Message[], tools?: Tool[]): Promise<ModelResponse> {
+    const openaiMessages: OpenAIMessage[] = messages.map((m) => {
+        const msg: any = {
+            role: m.role,
+            content: m.content
+        };
+        if (m.tool_calls) msg.tool_calls = m.tool_calls;
+        if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+        if (m.name) msg.name = m.name;
+        return msg;
+    });
+
+    // console.log("Sending messages to model:", openaiMessages.length);
+    
+    // Tools are already in OpenAI format (mostly), just strip the 'execute' property
+    const openaiTools: OpenAI.Chat.ChatCompletionTool[] | undefined = tools?.map(t => ({
+        type: 'function',
+        function: t.function
     }));
 
     try {
       const response = await this.client.chat.completions.create({
         model: this.modelName,
-        messages: openaiMessages
+        messages: openaiMessages,
+        tools: openaiTools && openaiTools.length > 0 ? openaiTools : undefined
       });
 
-      return response.choices[0].message.content || "";
+      const choice = response.choices[0];
+      return {
+          content: choice.message.content,
+          toolCalls: choice.message.tool_calls
+      };
     } catch (error) {
       if (error instanceof OpenAI.APIError) {
         throw new Error(`OpenAI API error: ${error.message} (status: ${error.status})`);
@@ -136,16 +168,40 @@ export interface AgentConfig {
 }
 
 export class Agent implements Tool {
-  name: string;
-  description: string;
-  params = { task: "string" };
+  type: 'function' = 'function';
+  function: {
+      name: string;
+      description?: string;
+      parameters?: Record<string, unknown>;
+  };
 
   private context: Context;
 
   constructor(private config: AgentConfig) {
-    this.name = config.name || "agent";
-    this.description = config.description || "AI agent that can reason and use tools";
+    this.function = {
+        name: config.name || "agent",
+        description: config.description || "AI agent that can reason and use tools",
+        parameters: { 
+            type: 'object',
+            properties: {
+                task: { type: 'string' }
+            },
+            required: ['task']
+        }
+    };
     this.context = config.context || new Context();
+
+    // Merge tools from plugins
+    const pluginTools: Tool[] = [];
+    if (this.config.hooks) {
+      const plugins = Array.isArray(this.config.hooks) ? this.config.hooks : [this.config.hooks];
+      for (const plugin of plugins) {
+        if (plugin.tools) {
+          pluginTools.push(...plugin.tools);
+        }
+      }
+    }
+    this.config.tools = [...this.config.tools, ...pluginTools];
   }
 
   private getCombinedHooks(): Plugin | undefined {
@@ -178,7 +234,7 @@ export class Agent implements Tool {
   }
 
   async run(task: string): Promise<string> {
-    const hookContext: HookContext = { agentName: this.name };
+    const hookContext: HookContext = { agentName: this.function.name };
 
     let messages: Message[] = [
       { role: "system", content: this.buildSystemPrompt() },
@@ -191,7 +247,10 @@ export class Agent implements Tool {
     task = hookData.task;
     messages = hookData.messages;
 
+    let emptyResponseCount = 0;
+
     for (let i = 0; i < (this.config.maxIterations || 10); i++) {
+        // console.log(`\n--- Iteration ${i + 1} ---`);
       hookContext.iteration = i;
 
       let beforeIterData = await this.runHook('beforeIteration', { iteration: i, messages }, hookContext);
@@ -199,52 +258,125 @@ export class Agent implements Tool {
 
       let beforeCallData = await this.runHook('beforeModelCall', { messages }, hookContext);
       messages = beforeCallData.messages;
+      
+      // console.log("last Messages sent to model:", messages[messages.length - 2]);
 
-      const response = await this.config.model.chat(messages);
-
-      let afterCallData = await this.runHook('afterModelCall', { messages, response }, hookContext);
+      // Call model with native tools
+      const modelResponse = await this.config.model.chat(messages, this.config.tools);
+      
+      let afterCallData = await this.runHook('afterModelCall', { messages, response: modelResponse.content || "" }, hookContext);
       messages = afterCallData.messages;
-      const processedResponse = afterCallData.response;
+      
+      const responseMsg: Message = {
+          role: "assistant",
+          content: modelResponse.content,
+          tool_calls: modelResponse.toolCalls
+      };
+      
+      messages.push(responseMsg);
+      // For hook compatibility, we pass the content string
+      const processedResponse = modelResponse.content || "";
 
-      const thoughts = this.parseResponse(processedResponse);
+      // Logic for tool execution
+      const toolCalls = modelResponse.toolCalls;
+      const thoughts: Thought[] = []; // Deprecated concept in new structure but kept for hooks
 
-      for (const thought of thoughts) {
-        if (thought.type === "thought") {
-          continue;
-        }
-        if (thought.type === "action") {
-          const tool = this.config.tools.find((t) => t.name === thought.tool);
-          if (!tool) continue;
+      if (toolCalls && toolCalls.length > 0) {
+          emptyResponseCount = 0; // Reset error counter on successful tool usage
+          for (const toolCall of toolCalls) {
+              const toolName = toolCall.function.name;
+              const toolInputStr = toolCall.function.arguments;
+              let toolInput: any;
+              try {
+                  toolInput = JSON.parse(toolInputStr);
+              } catch(e) {
+                  toolInput = {}; // Parse error
+              }
 
-          if (this.config.humanInLoop) {
-            const confirmed = await this.config.humanInLoop(thought.tool, thought.input);
-            if (!confirmed) continue;
+              // Compatibility thought
+              thoughts.push({ type: 'action', tool: toolName, input: toolInput });
+
+              // console.log(`Executing tool ${toolName} with input`, toolInput);
+              
+              const tool = this.config.tools.find((t) => t.function.name === toolName);
+              let output;
+              
+              if (!tool) {
+                  output = `Tool ${toolName} not found`;
+              } else {
+                  if (this.config.humanInLoop) {
+                      const confirmed = await this.config.humanInLoop(toolName, toolInput);
+                      if (!confirmed) output = "User denied execution";
+                      else {
+                           try {
+                                output = await tool.execute(toolInput);
+                           } catch (error) {
+                                output = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
+                           }
+                      }
+                  } else {
+                        // Subagent logic
+                        const isSubAgent = tool instanceof Agent;
+                        const agentName = isSubAgent ? tool.function.name : toolName;
+
+                        if (isSubAgent) {
+                            (tool as Agent).setContext(this.context);
+                        }
+
+                        try {
+                            output = await tool.execute(toolInput);
+                        } catch (error) {
+                            output = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
+                        }
+
+                        if (isSubAgent) {
+                            this.context.setSubAgentMessages(agentName, (tool as Agent).getContext().getMessages());
+                        }
+                  }
+              }
+
+              // Append Tool Result
+              const toolOutput = typeof output === 'string' ? output : JSON.stringify(output);
+              // console.log(`Tool ${toolName} output:`, toolOutput.slice(0, 100) + (toolOutput.length > 100 ? '...' : ''));
+
+              messages.push({
+                  role: "tool",
+                  content: toolOutput || "Success", // Ensure content is never null completely if the tool succeeded but returned nothing
+                  tool_call_id: toolCall.id,
+                  name: toolName
+              });
           }
-
-          const isSubAgent = tool instanceof Agent;
-          const agentName = isSubAgent ? tool.name : thought.tool;
-
-          if (isSubAgent) {
-            (tool as Agent).setContext(this.context);
-          }
-
-          const output = await tool.execute(thought.input);
-
-          if (isSubAgent) {
-            this.context.setSubAgentMessages(agentName, (tool as Agent).getContext().getMessages());
-          }
-
-          const newMessage: Message = {
-            role: "assistant",
-            content: `Used tool ${thought.tool} with input ${JSON.stringify(thought.input)}\nResult: ${JSON.stringify(output)}`
-          };
-          messages.push(newMessage);
-        }
+      } else {
+          // No tools called, regular thought
+           thoughts.push({ type: 'thought', content: processedResponse });
       }
 
-      await this.runHook('afterIteration', { iteration: i, messages, response: processedResponse, thoughts }, hookContext);
+      const afterIterData = await this.runHook('afterIteration', { iteration: i, messages, response: processedResponse, thoughts }, hookContext);
+      if (afterIterData) {
+        messages = afterIterData.messages;
+        this.context.setMessages(messages);
+      }
 
-      if (this.isComplete(processedResponse)) {
+      if (!toolCalls || toolCalls.length === 0) {
+        // If the model returns no content and no tool calls, it's likely a glitch.
+        // We shouldn't exit; instead, we prompt the model to try again.
+        if (!processedResponse || processedResponse.trim().length === 0) {
+            emptyResponseCount++;
+            if (emptyResponseCount > 3) {
+                console.error("Model returned empty response too many times. Aborting.");
+                return "Error: Model returned empty response too many times. Please check your model configuration or input.";
+            }
+
+            console.log(`Empty response received (count: ${emptyResponseCount}). Prompting model to continue...`);
+            messages.push({
+                role: "user",
+                content: "Your response was empty. Please provide a valid answer or execute a command."
+            });
+            continue;
+        }
+        
+        emptyResponseCount = 0; // Reset counter on valid response
+
         let result = processedResponse;
         let afterRunData = await this.runHook('afterRun', { task, messages, result }, hookContext);
         return afterRunData.result;
@@ -263,51 +395,17 @@ export class Agent implements Tool {
   }
 
   private buildSystemPrompt(): string {
-    const tools = this.config.tools
-      .map((t) => `- ${t.name}: ${t.description}`)
-      .join("\n");
-    return `You are a helpful agent with access to tools:
-      ${tools}
+    let prompt = this.config.description 
+        ? `You are ${this.config.description}.`
+        : `You are a helpful agent.`;
+    
+    prompt += `\nThink step by step.`;
 
-      Think step by step. Format your response as:
-      Thought: <your reasoning>
-      Action: <tool_name>
-      Input: <JSON input>
-
-      Or respond directly when done.`;
-  }
-
-  private parseResponse(response: string): Thought[] {
-    const thoughts: Thought[] = [];
-    const lines = response.split("\n");
-    let current: Partial<Thought> = {};
-
-    for (const line of lines) {
-      const thoughtMatch = line.match(/^Thought:\s*(.+)/);
-      const actionMatch = line.match(/^Action:\s*(.+)/);
-      const inputMatch = line.match(/^Input:\s*(.+)/);
-
-      if (thoughtMatch) {
-        thoughts.push({ type: "thought", content: thoughtMatch[1] });
-      }
-      if (actionMatch) {
-        current = { type: "action", tool: actionMatch[1] };
-      }
-      if (inputMatch && current.type === "action") {
-        thoughts.push({
-          type: "action",
-          tool: current.tool!,
-          input: JSON.parse(inputMatch[1])
-        });
-        current = {};
-      }
+    if (this.config.tools && this.config.tools.length > 0) {
+        prompt += `\nYou have access to tools. When possible, you should use these tools to perform actions (like writing files, executing commands) to COMPLETE the task. Do not just describe the solution; IMPLEMENT it using the tools. Do not ask for confirmation unless absolutely necessary.`;
     }
 
-    return thoughts;
-  }
-
-  private isComplete(response: string): boolean {
-    return !response.includes("Action:") && !response.includes("Input:");
+    return prompt;
   }
 }
 
@@ -338,5 +436,4 @@ function combineHooks(...plugins: Plugin[]): Plugin {
   };
 }
 
-export * from './plugins';
 export * from "./plugins";

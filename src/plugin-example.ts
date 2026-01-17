@@ -8,9 +8,18 @@ async function example() {
   });
 
   const calculator = {
-    name: 'calculator',
-    description: 'Perform mathematical calculations',
-    params: { expression: 'string' },
+    type: 'function',
+    function: {
+        name: 'calculator',
+        description: 'Perform mathematical calculations',
+        parameters: { 
+            type: 'object',
+            properties: {
+                expression: { type: 'string' }
+            },
+            required: ['expression']
+        }
+    },
     async execute(params: unknown): Promise<unknown> {
       const { expression } = params as { expression: string };
       try {

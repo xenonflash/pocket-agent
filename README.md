@@ -34,9 +34,19 @@ const model = new Model({
 });
 
 const calculator: Tool = {
-  name: "calculator",
-  description: "Add two numbers",
-  params: { a: "number", b: "number" },
+  type: "function",
+  function: {
+    name: "calculator",
+    description: "Add two numbers",
+    parameters: {
+      type: "object",
+      properties: {
+        a: { type: "number" },
+        b: { type: "number" }
+      },
+      required: ["a", "b"]
+    }
+  },
   async execute(params) {
     const { a, b } = params as { a: number; b: number };
     return a + b;
@@ -64,9 +74,19 @@ import { stdin as input, stdout as output } from "process";
 const rl = readline.createInterface({ input, output });
 
 const calculator: Tool = {
-  name: "calculator",
-  description: "Add two numbers",
-  params: { a: "number", b: "number" },
+  type: "function",
+  function: {
+    name: "calculator",
+    description: "Add two numbers",
+    parameters: {
+      type: "object",
+      properties: {
+        a: { type: "number" },
+        b: { type: "number" }
+      },
+      required: ["a", "b"]
+    }
+  },
   async execute(params) {
     const { a, b } = params as { a: number; b: number };
     return a + b;
