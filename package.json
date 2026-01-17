@@ -1,6 +1,6 @@
 {
   "name": "pocket-agent",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "A minimal AI Agent SDK with ReAct pattern and Context Sharing",
   "keywords": [
