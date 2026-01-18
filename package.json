@@ -57,6 +57,7 @@
     "@types/node": "^25.0.3",
     "tsx": "^4.19.2",
     "vite": "^7.3.0",
-    "vite-plugin-dts": "^4.5.4"
+    "vite-plugin-dts": "^4.5.4",
+    "typescript": "^5.1.6"
   }
 }
