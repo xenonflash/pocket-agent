@@ -19,6 +19,7 @@ interface TimelineEvent {
   content: string; // Lossless full text
   name?: string;
   tool_call_id?: string;
+  tool_calls?: any[]; // Keep tool calls for assistant role to avoid OpenAI 400 errors
   is_pinned?: boolean; // Protects this event from LOD squashing (Core Memory)
 }
 
@@ -249,7 +250,8 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
             role: e.role,
             content: e.content,
             name: e.name,
-            tool_call_id: e.tool_call_id
+            tool_call_id: e.tool_call_id,
+            tool_calls: e.tool_calls
         }));
 
         const newMessages = [
@@ -278,7 +280,8 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
                 role: m.role as any,
                 content: m.content || "",
                 name: m.name,
-                tool_call_id: m.tool_call_id
+                tool_call_id: m.tool_call_id,
+                tool_calls: m.tool_calls
             }));
             await store.appendEvents(config.conversationId, newEvts);
             activeTailEvents.push(...newEvts);
