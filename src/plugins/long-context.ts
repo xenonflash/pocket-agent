@@ -19,6 +19,7 @@ interface TimelineEvent {
   content: string; // Lossless full text
   name?: string;
   tool_call_id?: string;
+  is_pinned?: boolean; // Protects this event from LOD squashing (Core Memory)
 }
 
 interface TimelineBlock {
@@ -147,6 +148,35 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
     }
   };
 
+  const pinTool: Tool = {
+    type: 'function',
+    function: {
+        name: 'pin_important_fact',
+        description: 'Pin a crucial piece of information (like a name, core rule, or password) into Core Memory. This creates a permanent Keyframe that will never be summarized or forgotten.',
+        parameters: {
+            type: 'object',
+            properties: {
+                fact: { type: 'string', description: 'The specific fact or rule to remember verbatim.' }
+            },
+            required: ['fact']
+        }
+    },
+    execute: async ({ fact }: { fact: string }) => {
+       if (!config.conversationId) return "No conversation ID configured.";
+       const eventId = generateId('evt_pin');
+       const pinEvt: TimelineEvent = {
+           id: eventId,
+           timestamp: Date.now(),
+           role: 'system', // Treated as system anchor
+           content: `[CORE MEMORY PINNED FACT]:\n${fact}`,
+           is_pinned: true
+       };
+       await store.appendEvents(config.conversationId, [pinEvt]);
+       activeTailEvents.push(pinEvt);
+       return `Fact pinned successfully. It is now permanently anchored in your Core Memory at LOD 0.`;
+    }
+  };
+
   function renderRuler(blocks: TimelineBlock[]): Message {
      if (blocks.length === 0) return { role: 'system', content: 'TIMELINE RULER: No past history.' };
      let content = '=== TIMELINE RULER ===\nPast events have been squashed to save space. Use `zoom_in_timeline(block_id)` to restore details.\n\n';
@@ -159,7 +189,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
   
   return {
     name: 'longContextTimeline',
-    tools: [zoomTool],
+    tools: [zoomTool, pinTool],
     hooks: {
       async beforeRun({ task, messages }, hookContext) {
         if (!config.conversationId) return { task, messages };
@@ -178,6 +208,13 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
 
         // Constraint 2: Head (System Prompt) stays LOD 0
         const sysMsg = messages[0];
+        
+        // Keyframe Implementation: Prepend pinned core memory
+        const pinnedMessages = db.events.filter(e => e.is_pinned).map(e => ({
+            role: e.role,
+            content: e.content
+        } as Message));
+
         const userMsg = messages[messages.length - 1]; // Assume task is at end
 
         // Constraint 3: Giant Input Defense
@@ -217,6 +254,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
 
         const newMessages = [
             sysMsg,
+            ...pinnedMessages,
             renderRuler(currentBlocks),
             ...tailMessages,
             finalUserMsg
@@ -251,13 +289,14 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
         // 2. Token Check & Middle Squashing (Constraint 4)
         const currentTokens = calculateTotalTokens(updatedMessages, tokenCounter);
         if (currentTokens > summaryThreshold && activeTailEvents.length > 3) {
-            // Find the Ruler index (should be 1)
+            // Find the Ruler index (should be 1 + pinned messages count)
             const rulerIdx = updatedMessages.findIndex(m => m.role === 'system' && (m.content||'').includes('TIMELINE RULER'));
             
             // Squash the oldest N events from the Tail
-            // We'll squash half of the active tail to free up substantial space
-            const squashCount = Math.floor(activeTailEvents.length / 2);
-            const eventsToSquash = activeTailEvents.slice(0, squashCount);
+            // We'll squash half of the active tail to free up substantial space, ignoring pinned items
+            const unpinnedTail = activeTailEvents.filter(e => !e.is_pinned);
+            const squashCount = Math.floor(unpinnedTail.length / 2);
+            const eventsToSquash = unpinnedTail.slice(0, squashCount);
             
             if (eventsToSquash.length > 0) {
                 console.log(`\x1b[33m[LongContext Timeline] Squashing ${eventsToSquash.length} oldest events into a LOD 1 Block...\x1b[0m`);

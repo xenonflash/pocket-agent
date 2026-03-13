@@ -66,6 +66,36 @@ class MockModel implements ModelInterface {
         }
     }
 
+    // Simulate Turn 5: Pinning Core Memory
+    if (lastMsg.includes("I have a new admin password")) {
+        return {
+            content: null,
+            toolCalls: [{
+                id: "call_pin_" + Math.random().toString(36).substr(2, 9),
+                type: "function",
+                function: {
+                    name: "pin_important_fact",
+                    arguments: JSON.stringify({ fact: "The new admin password is 'SuperSecret123!'" })
+                }
+            }]
+        };
+    }
+
+    // Simulate Turn 5: Acknowledgment
+    if (messages.length > 0 && messages[messages.length - 1].role === 'tool' && (messages[messages.length - 1].content || "").includes("pinned successfully")) {
+         return { content: "I have permanently anchored the admin password into my Core Memory." };
+    }
+
+    // Simulate Turn 6: Verification without Zoom
+    if (lastMsg.includes("Without using any tools, what is the admin password")) {
+        // Check if the pin exists in the system prompt area
+        const hasPin = messages.some(m => m.role === 'system' && (m.content || "").includes("CORE MEMORY PINNED FACT"));
+        if (hasPin) {
+            return { content: "Because it was pinned to my Core Memory, I know without zooming that the admin password is 'SuperSecret123!'." };
+        }
+        return { content: "I don't know the password. It must have been squashed." };
+    }
+
     return { content: "I am a offline mock model. I received your message." };
   }
 }
@@ -88,7 +118,7 @@ async function example() {
 
   const agent = createAgent({
     model,
-    tools: [], // No standard tools needed, zoom_in_timeline is injected by the plugin
+    tools: [], // No standard tools needed, tools are injected by the plugin
     hooks: [longContextPlugin, loggingPlugin]
   });
 
@@ -103,9 +133,19 @@ async function example() {
   console.log('\n🎯 Zoom Result:', finalResult);
 
   console.log("\n--- Turn 4: Throwing a Giant Payload to test Truncation Defense ---");
-  const giantPayload = "This is a giant payload. ".repeat(500); // 500 * 5 words ~ 2500 tokens, well over the 150 buffer limit setting.
+  const giantPayload = "This is a giant payload. ".repeat(500); // Exceeds active buffer limit
   const defenseResult = await agent.run(`Here is a giant payload: ${giantPayload}`);
   console.log('\n🛡️ Defense Result:', defenseResult);
+
+  console.log("\n--- Turn 5: Testing Keyframe Pinning Tool ---");
+  await agent.run("I have a new admin password for you. It is 'SuperSecret123!'. Please use the `pin_important_fact` tool to pin this to your core memory right now.");
+
+  console.log("\n--- Turn 6: Flushing Context Again ---");
+  await agent.run(`Please explain quantum physics briefly. ${giantPayload}`);
+
+  console.log("\n--- Turn 7: Verifying Core Memory Survivability ---");
+  const pinResult = await agent.run("Without using any tools, what is the admin password I gave you earlier? It should be in your Core Memory.");
+  console.log('\n📌 Pin Result:', pinResult);
 }
 
 example().catch(console.error);
