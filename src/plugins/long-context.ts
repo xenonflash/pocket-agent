@@ -110,7 +110,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
     type: 'function',
     function: {
         name: 'zoom_in_timeline',
-        description: 'Read the raw, uncompressed content of a historic Timeline Block using its block_id. Use this when the timeline ruler shows a summary but you need the exact code or details.',
+        description: 'Read the raw, uncompressed content of a historic Timeline Block using its block_id. 🎯 WHEN TO USE: 1. If the user asks about past details that are missing from the current active context. 2. If you see a summary in the TIMELINE RULER that contains information necessary for your current task. Note: You do NOT need to "zoom out"—the memory system will automatically collapse older events to save space.',
         parameters: { 
             type: 'object',
             properties: {
@@ -153,7 +153,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
     type: 'function',
     function: {
         name: 'pin_important_fact',
-        description: 'Pin a crucial piece of information (like a name, core rule, or password) into Core Memory. This creates a permanent Keyframe that will never be summarized or forgotten.',
+        description: 'Pin a crucial piece of information into Core Memory. 🎯 WHEN TO USE: 1. When the user explicitly provides a core rule, a password, an important configuration, or a user preference. 2. This creates a permanent Keyframe (LOD 0) that will NEVER be squashed or forgotten by the timeline system. Do not overuse this for trivial conversation.',
         parameters: {
             type: 'object',
             properties: {
@@ -180,7 +180,7 @@ export function createLongContextPlugin(config: LongContextPluginConfig = {}): P
 
   function renderRuler(blocks: TimelineBlock[]): Message {
      if (blocks.length === 0) return { role: 'system', content: 'TIMELINE RULER: No past history.' };
-     let content = '=== TIMELINE RULER ===\nPast events have been squashed to save space. Use `zoom_in_timeline(block_id)` to restore details.\n\n';
+     let content = '=== ⏳ TIMELINE RULER ⏳ ===\nTo save context space, older events have been squashed into LOD 1 Blocks below.\n💡 INSTRUCTION: If you need to read the exact details, code, or logs of a past event, YOU MUST USE the `zoom_in_timeline` tool with the appropriate `block_id`.\n\n';
      for (const b of blocks) {
          content += `[Block ${b.block_id}]: ${b.lod1_summary}\n`;
      }
