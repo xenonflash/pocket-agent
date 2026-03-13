@@ -1,42 +1,85 @@
-import { createAgent, Model, Tool } from './index';
+import { createAgent, Tool, Message, ModelInterface } from './index';
 import { createLongContextPlugin, createLoggingPlugin } from './plugins';
 
-async function example() {
-  const model = new Model({
-    apiKey: process.env.OPENAI_API_KEY || 'your-api-key',
-    model: 'gpt-4o-mini'
-  });
-
-  const calculator: Tool = {
-    type: 'function',
-    function: {
-        name: 'calculator',
-        description: 'Perform mathematical calculations',
-        parameters: { 
-            type: 'object',
-            properties: {
-                expression: { type: 'string' }
-            },
-            required: ['expression']
-        }
-    },
-    async execute(params: unknown): Promise<unknown> {
-      const { expression } = params as { expression: string };
-      try {
-        const result = eval(expression);
-        return result.toString();
-      } catch (error) {
-        return `Error: ${error instanceof Error ? error.message : String(error)}`;
-      }
+// A simple mock model to test the Timeline Plugin without requiring OpenAI API Keys
+class MockModel implements ModelInterface {
+  async chat(messages: Message[], tools?: any[]): Promise<{ content: string | null; toolCalls?: any[] }> {
+    const lastMsg = messages[messages.length - 1].content || "";
+    
+    // Simulate Summary Generation (happens in background)
+    if (lastMsg.includes("Summarize the following conversation")) {
+        return { content: "[LOD 1 Summary] User shared a secret database port (8432) and keyword (Watermelon)." };
     }
-  };
+    
+    // Simulate Turn 1: Understanding secrets
+    if (lastMsg.includes("secure database port is exactly")) {
+        return { content: "Understood. I have securely noted the database port and secret keyword." };
+    }
+    
+    // Simulate Turn 2: Pushing filler
+    if (lastMsg.includes("Eiffel Tower")) {
+        return { content: "The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France. It is named after the engineer Gustave Eiffel, whose company designed and built the tower.\n\nConstructed from 1887 to 1889 as the centerpiece of the 1889 World's Fair, it was initially criticized by some of France's leading artists and intellectuals for its design, but it has become a global cultural icon of France and one of the most recognizable structures in the world.\n\nThe tower is 330 metres (1,083 ft) tall, about the same height as an 81-storey building, and the tallest structure in Paris. Its base is square, measuring 125 metres (410 ft) on each side." };
+    }
+    
+    // Simulate Turn 3: Needing to zoom
+    if (lastMsg.includes("Do you remember the secret keyword")) {
+        // Find the block ID in the Timeline Ruler
+        let blockId = "";
+        for (const msg of messages) {
+            if (msg.role === 'system' && msg.content && msg.content.includes("TIMELINE RULER")) {
+                const match = msg.content.match(/\[Block (blk_[^\]]+)\]/);
+                if (match) blockId = match[1];
+            }
+        }
+        
+        if (blockId) {
+            return {
+                content: null,
+                toolCalls: [{
+                    id: "call_" + Math.random().toString(36).substr(2, 9),
+                    type: "function",
+                    function: {
+                        name: "zoom_in_timeline",
+                        arguments: JSON.stringify({ block_id: blockId })
+                    }
+                }]
+            };
+        }
+        return { content: "I don't see any blocks in the timeline ruler to zoom into!" };
+    }
+    
+    // Simulate Turn 3: After zooming
+    if (messages.length > 0 && messages[messages.length - 1].role === 'tool') {
+        const toolOutput = messages[messages.length - 1].content || "";
+        if (toolOutput.includes("Watermelon") && toolOutput.includes("8432")) {
+            return { content: "I zoomed into the timeline and found it! The secure database port is 8432 and the secret keyword is 'Watermelon'." };
+        }
+    }
 
+    // Simulate Turn 4: Giant Payload
+    if (lastMsg.includes("giant payload")) {
+        // Assert it was truncated
+        if (lastMsg.includes("SYSTEM WARNING: Giant Input Truncated")) {
+            return { content: "Wow, that was a massive payload! Thankfully the memory system truncated it to protect my context window, but I see it was archived safely." };
+        } else {
+            return { content: "I received the giant payload but it wasn't truncated! This is dangerous for my context limit." };
+        }
+    }
+
+    return { content: "I am a offline mock model. I received your message." };
+  }
+}
+
+async function example() {
+  const model = new MockModel();
+
+  // Intentionally extremely low thresholds to force timeline squashing quickly for testing
   const longContextPlugin = createLongContextPlugin({
-    maxTokens: 8000,
-    activeBufferTokens: 4000,
-    summaryThreshold: 6000,
+    maxTokens: 1000,
+    activeBufferTokens: 150, // Keep very few tokens in the active tail
+    summaryThreshold: 200,   // Summarize blocks frequently
     storageDir: './storage',
-    conversationId: 'example-conversation-1',
+    conversationId: `timeline-test-${Date.now()}`,
     model: model,
     tokenCounter: (text) => Math.ceil(text.length / 4)
   });
@@ -45,12 +88,24 @@ async function example() {
 
   const agent = createAgent({
     model,
-    tools: [calculator],
+    tools: [], // No standard tools needed, zoom_in_timeline is injected by the plugin
     hooks: [longContextPlugin, loggingPlugin]
   });
 
-  const result = await agent.run('Calculate 2 + 2, then multiply result by 3');
-  console.log('Result:', result);
+  console.log("--- Turn 1: Providing specific detail to be forgotten/summarized ---");
+  await agent.run('I am giving you a very specific configuration value. The secure database port is exactly 8432 and the secret keyword is "Watermelon". Please just reply "Understood".');
+  
+  console.log("\n--- Turn 2: Pushing the context window with filler ---");
+  await agent.run('Please write a 3-paragraph essay about the history of the Eiffel Tower. Ensure it is long enough to fill the context window context.');
+  
+  console.log("\n--- Turn 3: Requesting a Zoom to retrieve the lost fact ---");
+  const finalResult = await agent.run('Do you remember the secret keyword and the database port I gave you in the very first turn? Your timeline ruler likely shows a summarized block for it. Please use the `zoom_in_timeline` tool on the appropriate block_id in your generic TIMELINE RULER to read the raw text and find the exact port and keyword, then reply with them.');
+  console.log('\n🎯 Zoom Result:', finalResult);
+
+  console.log("\n--- Turn 4: Throwing a Giant Payload to test Truncation Defense ---");
+  const giantPayload = "This is a giant payload. ".repeat(500); // 500 * 5 words ~ 2500 tokens, well over the 150 buffer limit setting.
+  const defenseResult = await agent.run(`Here is a giant payload: ${giantPayload}`);
+  console.log('\n🛡️ Defense Result:', defenseResult);
 }
 
 example().catch(console.error);
