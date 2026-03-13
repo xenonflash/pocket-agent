@@ -1,223 +1,96 @@
 # Pocket Agent - Plugin System
 
-## 概述
+Pocket Agent features a minimalist, hook-based Plugin System that allows you to cleanly extend agent functionality without bloating the core SDK.
 
-Pocket Agent现在支持基于hooks的插件系统，可以轻松扩展功能，同时保持核心SDK的极简设计。
+## Core Concepts
 
-## 插件结构
-
-```
-src/
-  ├── index.ts           # 核心 Agent SDK
-  └── plugins/           # 插件目录
-      ├── index.ts        # 插件统一导出
-      ├── long-context.ts # 长上下文插件
-      └── logging.ts      # 日志插件
-```
-
-## Plugin类型
-
-所有插件都实现了`Plugin`接口：
+A Plugin in Pocket Agent is simply an object that implements the `Plugin` interface:
 
 ```typescript
+import type { AgentHooks, Tool } from 'pocket-agent';
+
 export interface Plugin {
   name: string;
   hooks: AgentHooks;
+  tools?: Tool[]; // Optionally inject custom tools into the agent
 }
 ```
 
-## Hook系统
+## The Hook Lifecycle
 
-### 可用的Hooks
+Plugins can intercept and modify data at 6 different stages of the Agent's execution loop:
+
+```text
+beforeRun 
+  │
+  ├──► beforeIteration
+  │      │
+  │      ├──► beforeModelCall
+  │      │      [ LLM Generation ]
+  │      ├──► afterModelCall
+  │      │
+  │      └──► [ Tool Execution ]
+  │
+  └──► afterIteration
+         │
+(loop if not finished)
+         │
+afterRun
+```
+
+### Hook Design Principles
+1. **Piping State**: Hooks receive `data` (like `messages`, `task`, `iteration`) and can return a modified copy of that data. If a hook returns `undefined`, the original data is kept.
+2. **Context Passing**: Every hook receives a `HookContext` containing the `agentName` and the current `iteration` count.
+3. **Async Native**: All hooks are asynchronous.
+4. **Tool Injection**: Plugins can natively inject their own tools (e.g., `zoom_in_timeline`) into the Agent's execution context by supplying them in the `tools` array.
+
+## Writing a Custom Plugin
+
+Creating a plugin is as easy as writing a factory function:
 
 ```typescript
-export type HookContext = {
-  agentName: string;
-  iteration?: number;
-};
+import type { Plugin } from 'pocket-agent';
 
-export interface AgentHooks {
-  beforeRun?: (data: { task: string; messages: Message[] }, context: HookContext) => Promise<{ task: string; messages: Message[] } | undefined> | { task: string; messages: Message[] } | undefined;
-  beforeIteration?: (data: { iteration: number; messages: Message[] }, context: HookContext) => Promise<{ iteration: number; messages: Message[] } | undefined> | { iteration: number; messages: Message[] } | undefined;
-  afterIteration?: (data: { iteration: number; messages: Message[]; response: string; thoughts: Thought[] }, context: HookContext) => Promise<{ iteration: number; messages: Message[]; response: string; thoughts: Thought[] } | undefined> | { iteration: number; messages: Message[]; response: string; thoughts: Thought[] } | undefined;
-  afterRun?: (data: { task: string; messages: Message[]; result: string }, context: HookContext) => Promise<{ task: string; messages: Message[]; result: string } | undefined> | { task: string; messages: Message[]; result: string } | undefined;
-  beforeModelCall?: (data: { messages: Message[] }, context: HookContext) => Promise<{ messages: Message[] } | undefined> | { messages: Message[] } | undefined;
-  afterModelCall?: (data: { messages: Message[]; response: string }, context: HookContext) => Promise<{ messages: Message[]; response: string } | undefined> | { messages: Message[]; response: string } | undefined;
+export function createMyGuardrailPlugin(): Plugin {
+  return {
+    name: 'GuardrailPlugin',
+    hooks: {
+      async beforeModelCall({ messages }, context) {
+        // Example: Inject a safety rule right before the LLM generates a response
+        const newMessages = [...messages];
+        newMessages.push({ role: 'system', content: 'Always reply in JSON format.' });
+        
+        return { messages: newMessages };
+      }
+    }
+  };
 }
 ```
 
-### Hook执行顺序
+## Built-in Plugins
 
-```
-beforeRun -> [beforeIteration -> beforeModelCall -> model.chat -> afterModelCall -> tool执行 -> afterIteration] -> afterRun
-```
+Pocket Agent ships with two powerful plugins out-of-the-box:
 
-### Hook设计原则
+### 1. `longContextTimeline`
+Transforms the flat array of Chat messages into an infinite, "Level of Detail (LOD)" timeline. Old messages are squashed into summarized blocks to conserve tokens, while the agent is given a `zoom_in_timeline` tool to losslessly fetch old details when needed. It also features a Core Memory pin system (`pin_important_fact`) to permanently anchor critical facts across the timeline.
 
-1. **失败中断**: 如果hook抛出异常，整个流程会中断
-2. **异步优先**: 所有hook都是异步的
-3. **类型安全**: 通过TypeScript函数签名约束返回类型
-4. **上下文传递**: `HookContext`包含agentName和iteration信息
-5. **可选返回**: hook可以返回undefined（不修改数据）或修改后的数据
+### 2. `logging`
+A simple dev plugin that beautifully logs the Agent's internal thoughts, tool calls, and LLM responses natively to the terminal console.
 
-## 内置插件
+## Usage
 
-### 1. 长上下文插件
-
-自动管理对话上下文，通过摘要和文件存储实现"无限"上下文长度。
-
-```typescript
-import { createAgent, Model } from 'pocket-agent';
-import { createLongContextPlugin } from 'pocket-agent/plugins';
-
-const model = new Model({
-  apiKey: 'your-api-key',
-  model: 'gpt-4o-mini'
-});
-
-const longContextPlugin = createLongContextPlugin({
-  maxTokens: 8000,              // 总上下文限制
-  activeBufferTokens: 4000,     // 活跃消息窗口
-  summaryThreshold: 6000,      // 触发摘要的阈值
-  storageDir: './storage',      // 存储目录
-  conversationId: 'conv-123',   // 对话ID（用于持久化）
-  model: model,                 // 用于生成摘要的模型
-  tokenCounter: (text) => Math.ceil(text.length / 4)  // Token计算函数
-});
-
-const agent = createAgent({
-  model,
-  tools,
-  hooks: [longContextPlugin]
-});
-```
-
-#### 工作原理
-
-1. **beforeRun**: 加载之前的摘要（如果存在）
-2. **afterIteration**: 当token数超过`summaryThreshold`时：
-   - 找出需要摘要的消息（保留最新的`activeBufferTokens`）
-   - 调用LLM生成摘要
-   - 将摘要保存到文件
-   - 更新messages数组，用摘要替换旧消息
-3. **afterRun**: 保存最终摘要
-
-#### 文件存储结构
-
-```
-./storage/
-  └── conversations/
-      └── {conversationId}/
-          ├── messages.json       # 被摘要的消息
-          ├── summary.json        # 累积摘要
-          └── index.json          # 消息索引
-```
-
-### 2. 日志插件
-
-简单的日志记录插件。
-
-```typescript
-import { createAgent } from 'pocket-agent';
-import { createLoggingPlugin } from 'pocket-agent/plugins';
-
-const loggingPlugin = createLoggingPlugin();
-
-const agent = createAgent({
-  model,
-  tools,
-  hooks: [loggingPlugin]
-});
-```
-
-## 组合插件
-
-直接在hooks字段传入插件数组，会自动组合：
+Simply pass an array of initialized plugins into your Agent's `hooks` configuration:
 
 ```typescript
 import { createAgent } from 'pocket-agent';
 import { createLongContextPlugin, createLoggingPlugin } from 'pocket-agent/plugins';
 
-const longContextPlugin = createLongContextPlugin({...});
-const loggingPlugin = createLoggingPlugin();
-
 const agent = createAgent({
-  model,
-  tools,
-  hooks: [longContextPlugin, loggingPlugin]  // 自动组合多个插件
+  model: myModel,
+  tools: myBusinessTools,
+  hooks: [
+    createLongContextPlugin({ /* config */ }),
+    createLoggingPlugin()
+  ]
 });
 ```
-
-插件会按数组顺序依次执行。也支持传入单个插件：
-
-```typescript
-const agent = createAgent({
-  model,
-  tools,
-  hooks: [longContextPlugin]  // 单个插件也用数组
-});
-```
-
-## 自定义插件
-
-创建自定义插件非常简单：
-
-```typescript
-import type { Plugin } from 'pocket-agent';
-
-interface MyPluginConfig {
-  // 插件特有的配置
-}
-
-function createMyPlugin(config: MyPluginConfig = {}): Plugin {
-  return {
-    name: 'myPlugin',
-    hooks: {
-      async beforeIteration({ iteration, messages }, context) {
-        console.log(`MyPlugin: Processing iteration ${iteration}`);
-        
-        // 修改messages
-        const updatedMessages = [...messages];
-        
-        // 返回修改后的数据
-        return { iteration, messages: updatedMessages };
-        
-        // 或者返回undefined表示不修改
-        // return undefined;
-      }
-    }
-  };
-}
-
-// 使用自定义插件
-import { createAgent } from 'pocket-agent';
-
-const myPlugin = createMyPlugin();
-
-const agent = createAgent({
-  model,
-  tools,
-  hooks: [myPlugin]
-});
-```
-
-## 最佳实践
-
-1. **避免副作用**: 尽量通过返回值修改数据，而不是直接修改传入的对象
-2. **错误处理**: 在hook中添加适当的错误处理
-3. **性能考虑**: 避免在频繁调用的hooks中执行耗时操作
-4. **插件独立性**: 插件之间应该通过返回值通信，避免共享状态
-
-## 测试
-
-运行hook系统测试：
-
-```bash
-pnpm exec tsx src/test-hooks.ts
-```
-
-## 示例
-
-查看 `src/plugin-example.ts` 获取完整示例。
-
-
